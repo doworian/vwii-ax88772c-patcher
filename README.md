@@ -45,10 +45,10 @@ Requires [devkitPPC](https://devkitpro.org/) with libogc and libfat.
 Based on [Patched IOS80 Installer for vWii](https://gbatemp.net/threads/patched-ios80-installer-for-vwii-allows-sd-menu-custom-channels.344882/) by FIX94, damysteryman, Dr Clipper, Davebaol, ZRicky11.
 
 AX88772B register analysis informed by SDIO's [wafel_ax88772b](https://github.com/StroopwafelCFW/wafel_ax88772b) plugin for native Wii U and the ASIX AX88772B/AX88772A datasheets.
-```
 
 ## References
 
 - [devkitPPC](https://devkitpro.org/)
 - [Patched IOS80 Installer for vWii](https://gbatemp.net/threads/patched-ios80-installer-for-vwii-allows-sd-menu-custom-channels.344882/)
 - [wafel_ax88772b](https://github.com/StroopwafelCFW/wafel_ax88772b)
+```
