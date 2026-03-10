@@ -2,7 +2,7 @@
 
 Patches vWii IOS80 and IOS58 to support ASIX AX88772B/C USB ethernet adapters. The stock driver only handles the original AX88772 (PID `0x7720`) - the 772B/C reports `0x772B`.
 
-The AX88772C chip reports PID `0x772B` on the USB bus (same as the 772B), not `0x772C`. Confirmed via Windows Device Manager hardware IDs.
+The AX88772C chip reports PID `0x772B` on the USB bus (same as the 772B), not `0x772C`. Confirmed via Windows Device Manager hardware IDs. (Verify on your own PC to be sure)
 
 ## What it patches
 
