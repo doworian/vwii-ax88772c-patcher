@@ -1,6 +1,6 @@
 /*
  * AX88772B/C USB Ethernet Patcher for vWii
- * by doworian — March 2026
+ * by doworian - March 2026
  *
  * The vWii ethernet driver in IOS80 only supports the AX88772 (PID 0x7720).
  * The newer AX88772B/C chips report PID 0x772B and have two register changes:
@@ -37,7 +37,7 @@ extern s32 install_IOS(IOS* ios, bool skipticket);
 
 // Patches 1-2: USB device path strings containing the PID
 // "/dev/usb/ehc/0b95/772" and "/dev/usb/oh0/0b95/772"
-// Byte 21 (the char after "772") is '0' on stock — we change it to 'b'.
+// Byte 21 (the char after "772") is '0' on stock - we change it to 'b'.
 static const u8 pat_ehc[] = {
     0x2F,0x64,0x65,0x76,0x2F,0x75,0x73,0x62,
     0x2F,0x65,0x68,0x63,0x2F,0x30,0x62,0x39,
@@ -66,7 +66,7 @@ static const u8 pat_rxctrl_b_new[] = { 0xE3,0xA0,0x1F,0x46, 0xEA,0xFF,0xFF,0x8C 
 static const u8 pat_rxctrl_c[] = { 0xE3,0xA0,0x1F,0xC6 };
 static const u8 pat_rxctrl_c_new[] = { 0xE3,0xA0,0x1F,0x46 };
 
-// Patches 7-8: Software reset register — set IPOSC=1 (bit 7).
+// Patches 7-8: Software reset register - set IPOSC=1 (bit 7).
 // Keeps the 25MHz crystal alive during PHY power-down so we don't hit
 // the 772B's 600ms cold-start penalty (772A was only 160ms).
 static const u8 pat_swrst_init[] = { 0xE5,0x9A,0x00,0x00, 0xE3,0xA0,0x10,0x44 };
@@ -214,37 +214,37 @@ static s32 patch_ios80_ethernet(IOS* ios)
         }
     }
 
-    // 4: RX ctrl A — MOV R1,#0x018 -> #0x118
+    // 4: RX ctrl A - MOV R1,#0x018 -> #0x118
     r = patch_block(buf, size, pat_rxctrl_a, pat_rxctrl_a_new,
         sizeof(pat_rxctrl_a), "RX ctrl A");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 5: RX ctrl B — MOV R1,#0x218 -> #0x118
+    // 5: RX ctrl B - MOV R1,#0x218 -> #0x118
     r = patch_block(buf, size, pat_rxctrl_b, pat_rxctrl_b_new,
         sizeof(pat_rxctrl_b), "RX ctrl B");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 6: RX ctrl C — MOV R1,#0x318 -> #0x118 (the EHC/USB2 path)
+    // 6: RX ctrl C - MOV R1,#0x318 -> #0x118 (the EHC/USB2 path)
     r = patch_block(buf, size, pat_rxctrl_c, pat_rxctrl_c_new,
         sizeof(pat_rxctrl_c), "RX ctrl C");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 7: sw_reset in axInit — 0x44 -> 0xC4 (IPOSC=1)
+    // 7: sw_reset in axInit - 0x44 -> 0xC4 (IPOSC=1)
     r = patch_block(buf, size, pat_swrst_init, pat_swrst_init_new,
         sizeof(pat_swrst_init), "sw_reset init");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 8: sw_reset in axDown — 0x4C -> 0xCC (IPOSC=1)
+    // 8: sw_reset in axDown - 0x4C -> 0xCC (IPOSC=1)
     r = patch_block(buf, size, pat_swrst_down, pat_swrst_down_new,
         sizeof(pat_swrst_down), "sw_reset down");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 9: VID:PID scanner — MOV+ADD+ADD -> LDR from inline literal pool
+    // 9: VID:PID scanner - MOV+ADD+ADD -> LDR from inline literal pool
     r = patch_block(buf, size, pat_vidpid, pat_vidpid_new,
         sizeof(pat_vidpid), "VID:PID scanner");
     if (r < 0) return -1;
@@ -340,7 +340,7 @@ static s32 do_patch_and_install(u32 iosnr, u32 rev, s32(*patcher)(IOS*))
     if (ret < 0) {
         printf("\nInstall failed (ret %d)\n", ret);
         if (ret == -1017 || ret == -2011)
-            printf("Hash check still active — launch from HBC.\n");
+            printf("Hash check still active - launch from HBC.\n");
         return ret;
     }
     printf("Done.\n");
