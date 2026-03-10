@@ -7,9 +7,10 @@
  * - RX Control [11:9]: MFB (burst) bits became RH3M/RH2M/RH1M (header mode)
  * - Software Reset [7]: reserved bit became IPOSC (oscillator keep-alive)
  *
- * IOS80 has its own ETH module (0000000b.app, ARM32) with 9 patches.
- * IOS58 has a separate ETH module (0000003c.app, Thumb) that needs its own
- * set of patches, plus the USB stack VID:PID table shared between both.
+ * IOS36 uses a shared ARM32 ETH module (shared1, 30584 bytes) - same binary
+ * as IOS80's private copy. All 9 ARM32 patches apply identically to both.
+ * IOS58 has a separate ETH module (Thumb) that needs its own set of patches,
+ * plus the USB stack VID:PID table shared between both.
  *
  * Based on FIX94/dmm's Patched IOS80 Installer for vWii.
  */
@@ -33,9 +34,11 @@ extern void encrypt_IOS(IOS* ios);
 extern void forge_tmd(signed_blob* s_tmd);
 extern s32 install_IOS(IOS* ios, bool skipticket);
 
-#define IOS80_NR 80
+#define IOS36_NR  36
+#define IOS36_REV 3864
+#define IOS80_NR  80
 #define IOS80_REV 7200
-#define IOS58_NR 58
+#define IOS58_NR  58
 #define IOS58_REV 6432
 
 /* -- IOS80 patch patterns (ARM32, 0000000b.app) --------------------------- */
@@ -241,7 +244,7 @@ static int count_pattern(const u8* buf, u32 size, const u8* pat, u32 len)
 
 /* -- IOS80: apply all 9 ethernet patches --------------------------------- */
 
-static s32 patch_ios80_ethernet(IOS* ios)
+static s32 patch_arm32_ethernet(IOS* ios)
 {
     tmd* t = (tmd*)SIGNATURE_PAYLOAD(ios->tmd);
     tmd_content* cr = TMD_CONTENTS(t);
@@ -251,7 +254,7 @@ static s32 patch_ios80_ethernet(IOS* ios)
 
     s32 index = find_eth_module(ios);
     if (index < 0) {
-        printf("Can't find ethernet module in IOS80\n");
+        printf("Can't find ARM32 ethernet module\n");
         return -1;
     }
     printf("Ethernet module is content #%d\n", index);
@@ -333,14 +336,14 @@ static s32 patch_ios80_ethernet(IOS* ios)
     if (r == 0) applied++; else existing++;
 
     if (applied == 0) {
-        printf("IOS80: all 9 patches already applied\n");
+        printf("ARM32 ETH: all 9 patches already applied\n");
         return 1;
     }
 
     t->contents[index].type = 1;
     SHA1(buf, size, hash);
     memcpy(cr[index].hash, hash, 20);
-    printf("IOS80: %d new + %d existing = 9 on content #%d\n", applied, existing, index);
+    printf("ARM32 ETH: %d new + %d existing = 9 on content #%d\n", applied, existing, index);
     return 0;
 }
 
@@ -592,9 +595,10 @@ int main(int argc, char* argv[])
     printf("\n\n");
     printf("=== AX88772B/C USB Ethernet Patcher for vWii ===\n\n");
     printf("Adapter PID 0x772B -> stock driver expects 0x7720.\n");
+    printf("IOS36: 9 patches (ARM32 ETH driver, shared content)\n");
     printf("IOS80: 9 patches (ARM32 ETH driver)\n");
     printf("IOS58: VID:PID + ETH register patches (Thumb driver)\n\n");
-    printf("Requires stock IOS80 v7200 and IOS58 v6432.\n");
+    printf("Requires IOS36 v3864, IOS80 v7200, IOS58 v6432.\n");
     printf("Make sure you have Priiloader + Aroma as safety net.\n\n");
 
     Patch_AHB();
@@ -612,13 +616,16 @@ int main(int argc, char* argv[])
     WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
 
     if (!ret)
-        bail("AHBPROT not available. Launch from HBC with <ahb_access/>.");
+        bail("AHBPROT not available. Launch from HBC with.");
 
+    s32 v36 = checkIOS(IOS36_NR);
     s32 v80 = checkIOS(IOS80_NR);
     s32 v58 = checkIOS(IOS58_NR);
+    printf("IOS36: v%d %s\n", v36, (v36 == IOS36_REV) ? "[ok]" : "[wrong]");
     printf("IOS80: v%d %s\n", v80, (v80 == IOS80_REV) ? "[ok]" : "[wrong]");
     printf("IOS58: v%d %s\n", v58, (v58 == IOS58_REV) ? "[ok]" : "[wrong]");
 
+    if (v36 != IOS36_REV) bail("IOS36 is not v3864.");
     if (v80 != IOS80_REV) bail("IOS80 is not v7200.");
     if (v58 != IOS58_REV) bail("IOS58 is not v6432.");
 
@@ -631,15 +638,20 @@ int main(int argc, char* argv[])
         Reboot();
     }
 
-    printf("\n--- Step 1/2: IOS80 (9 patches) ---\n");
-    ret = do_patch_and_install(IOS80_NR, IOS80_REV, patch_ios80_ethernet);
+    printf("\n--- Step 1/3: IOS36 (9 patches) ---\n");
+    ret = do_patch_and_install(IOS36_NR, IOS36_REV, patch_arm32_ethernet);
     if (ret < 0)
-        bail("IOS80 failed. Use Aroma to recover.");
+        bail("IOS36 failed. Use Aroma to recover.");
 
-    printf("\n--- Step 2/2: IOS58 (VID:PID + ETH patches) ---\n");
+    printf("\n--- Step 2/3: IOS80 (9 patches) ---\n");
+    ret = do_patch_and_install(IOS80_NR, IOS80_REV, patch_arm32_ethernet);
+    if (ret < 0)
+        bail("IOS80 failed. IOS36 already patched. Re-run to retry.");
+
+    printf("\n--- Step 3/3: IOS58 (VID:PID + ETH patches) ---\n");
     ret = do_patch_and_install(IOS58_NR, IOS58_REV, patch_ios58_ethernet);
     if (ret < 0)
-        bail("IOS58 failed. IOS80 already patched. Re-run to retry.");
+        bail("IOS58 failed. IOS36+IOS80 already patched. Re-run to retry.");
 
     ISFS_Deinitialize();
 
