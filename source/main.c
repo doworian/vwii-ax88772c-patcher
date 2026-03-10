@@ -2,7 +2,7 @@
  * AX88772C USB Ethernet Patcher for vWii
  *
  * Patches IOS80 + IOS58 to recognize AX88772C (PID 0x772C)
- * and fixes RX Control Register init for AX88772B/C compatibility.
+ * and fixes register init for AX88772B/C compatibility.
  *
  * Based on FIX94/dmm's Patched IOS80 Installer for vWii.
  */
@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gccore.h>
-#include <wiiuse/wpad.h>
+#include <ogcsys.h>
 
 #include "IOSPatcher.h"
 #include "identify.h"
@@ -63,7 +63,6 @@ static const u8 pat_add_new[] = { 0xE2, 0x83, 0x30, 0x2C };
 
 /* ---- RX Control Register patterns ---- */
 
-// axInit MFB=0x800 path: CMP R3,#0x4000 followed by MOV R1,#0x18
 static const u8 pat_rxctrl_mfb800[] = {
     0xE3, 0x53, 0x09, 0x01,
     0xE3, 0xA0, 0x10, 0x18
@@ -77,7 +76,6 @@ static const u8 pat_rxctrl_mfb800_done[] = {
     0xE3, 0xA0, 0x1F, 0x46
 };
 
-// axInit MFB=0x2000 path: MOV R1,#0x218 followed by B (backward)
 static const u8 pat_rxctrl_mfb2k[] = {
     0xE3, 0xA0, 0x1F, 0x86,
     0xEA, 0xFF, 0xFF, 0x8C
@@ -89,6 +87,34 @@ static const u8 pat_rxctrl_mfb2k_new[] = {
 static const u8 pat_rxctrl_mfb2k_done[] = {
     0xE3, 0xA0, 0x1F, 0xC6,
     0xEA, 0xFF, 0xFF, 0x8C
+};
+
+/* ---- Software Reset IPOSC patterns ---- */
+
+static const u8 pat_swrst_init[] = {
+    0xE5, 0x9A, 0x00, 0x00,
+    0xE3, 0xA0, 0x10, 0x44
+};
+static const u8 pat_swrst_init_new[] = {
+    0xE5, 0x9A, 0x00, 0x00,
+    0xE3, 0xA0, 0x10, 0xC4
+};
+static const u8 pat_swrst_init_done[] = {
+    0xE5, 0x9A, 0x00, 0x00,
+    0xE3, 0xA0, 0x10, 0xC4
+};
+
+static const u8 pat_swrst_down[] = {
+    0xE5, 0x94, 0x00, 0x00,
+    0xE3, 0xA0, 0x10, 0x4C
+};
+static const u8 pat_swrst_down_new[] = {
+    0xE5, 0x94, 0x00, 0x00,
+    0xE3, 0xA0, 0x10, 0xCC
+};
+static const u8 pat_swrst_down_done[] = {
+    0xE5, 0x94, 0x00, 0x00,
+    0xE3, 0xA0, 0x10, 0xCC
 };
 
 /* ---- IOS58 VID:PID table ---- */
@@ -140,21 +166,13 @@ static s32 find_eth_module(IOS* ios)
     return -1;
 }
 
-/*
- * Patch IOS80 ethernet module — 5 sites:
- *   1) ehc device path  '7720' -> '772c'
- *   2) oh0 device path  '7720' -> '772c'
- *   3) ARM PID immediate  ADD #0x20 -> ADD #0x2C
- *   4) RX ctrl MFB=0x800  MOV R1,#0x18 -> MOV R1,#0x118  (set RH1M)
- *   5) RX ctrl MFB=0x2000 MOV R1,#0x218 -> MOV R1,#0x318  (set RH1M)
- */
 static s32 patch_ios80_ethernet(IOS* ios)
 {
     tmd* t = (tmd*)SIGNATURE_PAYLOAD(ios->tmd);
     tmd_content* cr = TMD_CONTENTS(t);
     s32 index, off;
     u8 hash[20];
-    int applied = 0, existing = 0, total = 5;
+    int applied = 0, existing = 0, total = 7;
 
     index = find_eth_module(ios);
     if (index < 0)
@@ -234,7 +252,7 @@ static s32 patch_ios80_ethernet(IOS* ios)
         return -1;
     }
 
-    /* --- site 4: RX control MFB=0x800 (0x18 -> 0x118, sets RH1M) --- */
+    /* --- site 4: RX control MFB=0x800 --- */
     off = find_pattern(buf, size, pat_rxctrl_mfb800, sizeof(pat_rxctrl_mfb800));
     if (off >= 0)
     {
@@ -253,7 +271,7 @@ static s32 patch_ios80_ethernet(IOS* ios)
         return -1;
     }
 
-    /* --- site 5: RX control MFB=0x2000 (0x218 -> 0x318, sets RH1M) --- */
+    /* --- site 5: RX control MFB=0x2000 --- */
     off = find_pattern(buf, size, pat_rxctrl_mfb2k, sizeof(pat_rxctrl_mfb2k));
     if (off >= 0)
     {
@@ -269,6 +287,44 @@ static s32 patch_ios80_ethernet(IOS* ios)
     else
     {
         printf("  RX ctrl MFB2K: NOT FOUND\n");
+        return -1;
+    }
+
+    /* --- site 6: sw_reset axInit 0x44 -> 0xC4 (set IPOSC) --- */
+    off = find_pattern(buf, size, pat_swrst_init, sizeof(pat_swrst_init));
+    if (off >= 0)
+    {
+        printf("  sw_reset init @ 0x%04X: #0x44 -> #0xC4\n", off + 7);
+        memcpy(buf + off, pat_swrst_init_new, sizeof(pat_swrst_init_new));
+        applied++;
+    }
+    else if (find_pattern(buf, size, pat_swrst_init_done, sizeof(pat_swrst_init_done)) >= 0)
+    {
+        printf("  sw_reset init: already done\n");
+        existing++;
+    }
+    else
+    {
+        printf("  sw_reset init (0x44): NOT FOUND\n");
+        return -1;
+    }
+
+    /* --- site 7: sw_reset axDown 0x4C -> 0xCC (set IPOSC) --- */
+    off = find_pattern(buf, size, pat_swrst_down, sizeof(pat_swrst_down));
+    if (off >= 0)
+    {
+        printf("  sw_reset down @ 0x%04X: #0x4C -> #0xCC\n", off + 7);
+        memcpy(buf + off, pat_swrst_down_new, sizeof(pat_swrst_down_new));
+        applied++;
+    }
+    else if (find_pattern(buf, size, pat_swrst_down_done, sizeof(pat_swrst_down_done)) >= 0)
+    {
+        printf("  sw_reset down: already done\n");
+        existing++;
+    }
+    else
+    {
+        printf("  sw_reset down (0x4C): NOT FOUND\n");
         return -1;
     }
 
@@ -414,12 +470,11 @@ int main(int argc, char* argv[])
 
     printf("\n\n");
     printf("=== AX88772C USB Ethernet Patcher for vWii ===\n\n");
-    printf("Patches IOS80 + IOS58 to recognize AX88772C (PID 772C)\n");
-    printf("and fixes RX header format for AX88772B/C chips.\n\n");
-    printf(" IOS80: ehc/oh0 paths, ARM PID, RX ctrl init (5 patches)\n");
-    printf(" IOS58: VID:PID table entry (1 patch)\n\n");
+    printf("Patches IOS80 + IOS58 for AX88772C (PID 772C)\n\n");
+    printf(" IOS80: PID paths, ARM imm, RX ctrl, sw_reset IPOSC (7)\n");
+    printf(" IOS58: VID:PID table (1)\n\n");
     printf("Requires IOS80 v7200 and IOS58 v6432 (stock vWii).\n");
-    printf("Make sure you have Priiloader + Aroma as brick protection.\n\n");
+    printf("Make sure you have Priiloader + Aroma as safety net.\n\n");
 
     Patch_AHB();
     ret = (__IOS_LoadStartupIOS() == 0 && *(vu32*)0xCD800064 == 0xFFFFFFFF);
@@ -456,19 +511,19 @@ int main(int argc, char* argv[])
         Reboot();
     }
 
-    printf("\n--- Step 1/2: IOS80 (ethernet driver + RX ctrl fix) ---\n");
+    printf("\n--- Step 1/2: IOS80 ---\n");
     ret = do_patch_and_install(IOS80_NR, IOS80_REV, patch_ios80_ethernet);
     if (ret < 0)
         bail("IOS80 failed. IOS58 untouched. Use Aroma to recover.");
 
-    printf("\n--- Step 2/2: IOS58 (VID:PID stub) ---\n");
+    printf("\n--- Step 2/2: IOS58 ---\n");
     ret = do_patch_and_install(IOS58_NR, IOS58_REV, patch_ios58_vidpid);
     if (ret < 0)
         bail("IOS58 failed. IOS80 already patched. Re-run to retry.");
 
     ISFS_Deinitialize();
 
-    printf("\n\nAll done. Plug in the adapter and test from System Settings.\n");
+    printf("\n\nAll done. Plug in adapter and test from System Settings.\n");
     printf("Press any button to exit.\n");
     waitforbuttonpress(NULL, NULL);
 
