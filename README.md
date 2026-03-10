@@ -1,12 +1,12 @@
 # vwii-ax88772b-patcher
 
-Patches vWii IOS80 and IOS58 to support ASIX AX88772B/C USB ethernet adapters. The stock driver only handles the original AX88772 (PID `0x7720`) - the 772B/C reports `0x772B`.
+Patches vWii IOS36, IOS80 and IOS58 to support ASIX AX88772B/C USB ethernet adapters. The stock driver only handles the original AX88772 (PID `0x7720`) - the 772B/C reports `0x772B`.
 
 The AX88772C chip reports PID `0x772B` on the USB bus (same as the 772B), not `0x772C`. Confirmed via Windows Device Manager hardware IDs. (Verify on your own PC to be sure)
 
 ## What it patches
 
-**IOS80 - ARM32 ETH driver, 0000000b.app (9 patches):**
+**IOS36 + IOS80 - ARM32 ETH driver (9 patches each, identical binary):**
 
 | # | Patch | Description |
 |---|-------|-------------|
@@ -20,7 +20,9 @@ The AX88772C chip reports PID `0x772B` on the USB bus (same as the 772B), not `0
 | 8 | sw_reset axDown: `#0x4C` → `#0xCC` | Set IPOSC |
 | 9 | VID:PID scanner: `MOV+ADD+ADD` → `LDR` literal | Device list matching - see below |
 
-**IOS58 - Thumb ETH driver, 0000003c.app + USB stack (4 patches):**
+IOS36 is used by Mario Kart Wii and CTGP-R. IOS80 is used by the System Menu and System Settings. Both contain the same 30584-byte ETH driver binary (IOS36 as shared content, IOS80 as private content).
+
+**IOS58 - Thumb ETH driver + USB stack (4 patches):**
 
 | # | Patch | Description |
 |---|-------|-------------|
@@ -28,6 +30,8 @@ The AX88772C chip reports PID `0x772B` on the USB bus (same as the 772B), not `0
 | 11 | RX ctrl 0x4000: `MOVS R1, #0xC6` → `#0x46` | Header mode for EHCI buffer path (`0x318` → `0x118`) |
 | 12 | RX ctrl 0x2000: `MOVS R1, #0x86` → `#0x46` | Header mode for OHCI buffer path (`0x218` → `0x118`) |
 | 13 | sw_reset axDown: `MOVS R1, #0x4C` → `#0xCC` | Set IPOSC |
+
+IOS58 is used by the Homebrew Channel and most homebrew apps.
 
 ### Why these patches exist
 
@@ -45,7 +49,7 @@ After patching, press B to test the connection. The patcher reloads IOS58 to act
 
 ## Requirements
 
-- Wii U running vWii with **IOS80 v7200** and **IOS58 v6432** (stock)
+- Wii U running vWii with **IOS36 v3864**, **IOS80 v7200** and **IOS58 v6432** (stock)
 - Homebrew Channel with `<ahb_access/>`
 - Priiloader + Aroma installed (brick protection)
 - ASIX AX88772B or AX88772C USB ethernet adapter
