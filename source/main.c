@@ -1,17 +1,14 @@
 /*
  * AX88772B/C USB Ethernet Patcher for vWii
+ * by doworian — March 2026
  *
- * The AX88772C reports PID 0x772B. Two register bit fields changed
- * between 772A and 772B that break the stock vWii driver:
+ * The vWii ethernet driver in IOS80 only supports the AX88772 (PID 0x7720).
+ * The newer AX88772B/C chips report PID 0x772B and have two register changes:
+ *   - RX Control [11:9]: MFB (burst) bits became RH3M/RH2M/RH1M (header mode)
+ *   - Software Reset [7]: reserved bit became IPOSC (oscillator keep-alive)
  *
- *   RX Control [9:8] — was MFB (burst size), now RH2M/RH1M (header mode)
- *   Software Reset [7] — was reserved, now IPOSC (crystal oscillator)
- *
- * The stock driver sets these bits for 772A semantics. On a 772B/C chip
- * this produces the wrong RX header format and kills the PHY oscillator
- * during power-down. We patch the values to their 772B equivalents.
- *
- * Based on FIX94/dmm Patched IOS80 Installer for vWii.
+ * 9 patches to IOS80's ethernet module, 1 patch to IOS58's VID:PID table.
+ * Based on FIX94/dmm's Patched IOS80 Installer for vWii.
  */
 
 #include <stdio.h>
@@ -36,104 +33,66 @@ extern s32 install_IOS(IOS* ios, bool skipticket);
 #define IOS58_NR   58
 #define IOS58_REV  6432
 
-/* ---------- IOS80 ethernet module patterns ---------- */
+/* ── IOS80 patch patterns ────────────────────────────────────────────── */
 
-/* USB device path strings — byte 21 is the PID suffix char */
+// Patches 1-2: USB device path strings containing the PID
+// "/dev/usb/ehc/0b95/772" and "/dev/usb/oh0/0b95/772"
+// Byte 21 (the char after "772") is '0' on stock — we change it to 'b'.
 static const u8 pat_ehc[] = {
     0x2F,0x64,0x65,0x76,0x2F,0x75,0x73,0x62,
     0x2F,0x65,0x68,0x63,0x2F,0x30,0x62,0x39,
     0x35,0x2F,0x37,0x37,0x32
 };
-
 static const u8 pat_oh0[] = {
     0x2F,0x64,0x65,0x76,0x2F,0x75,0x73,0x62,
     0x2F,0x6F,0x68,0x30,0x2F,0x30,0x62,0x39,
     0x35,0x2F,0x37,0x37,0x32
 };
 
-/* MOV R3, #0x7700 — the ADD R3, R3, #imm that sets the low PID byte is 16 bytes later */
+// Patch 3: PID constructed in a register via MOV R3,#0x7700 then ADD R3,R3,#0x20.
+// We find the MOV and change the ADD's immediate 16 bytes later from 0x20 to 0x2B.
 static const u8 pat_mov_pid[] = { 0xE3, 0xA0, 0x3C, 0x77 };
 
-/*
- * RX control register patches.
- *
- * On the 772A, bits [9:8] select MFB (max frame burst). The stock driver
- * sets them based on the USB bulk transfer buffer size:
- *
- *   2048  bytes -> 0x018  (MFB=00)
- *   4096  bytes -> 0x118  (MFB=01)
- *   8192  bytes -> 0x218  (MFB=10)
- *   16384 bytes -> 0x318  (MFB=11)
- *
- * On the 772B, bits [9:8] are RH2M/RH1M (RX header mode). We need
- * RH1M=1 (type 1 headers, backward compatible) and RH2M=0 (no IP
- * alignment padding). That means bits [9:8] = 01 = 0x1xx.
- *
- * The adapter connects via EHC (high-speed USB), so the driver picks
- * buffer=16384 and writes 0x318. On a 772B that sets RH2M=1 which
- * inserts 2 bytes of padding the RX parser doesn't expect — every
- * received packet is misaligned and the connection test hangs forever.
- */
+// Patches 4-6: RX control register values for each buffer size.
+// 772B repurposed bits [10:9] as RH2M/RH1M (header mode select).
+// Stock values 0x018/0x218/0x318 all need to become 0x118 (RH1M=1, RH2M=0)
+// so the RX parser gets type-1 headers with no IP alignment padding.
+static const u8 pat_rxctrl_a[] = { 0xE3,0x53,0x09,0x01, 0xE3,0xA0,0x10,0x18 };
+static const u8 pat_rxctrl_a_new[] = { 0xE3,0x53,0x09,0x01, 0xE3,0xA0,0x1F,0x46 };
 
- /* Path A: 2048-byte buffer. CMP R3, #0x4000; MOV R1, #0x18 */
-static const u8 pat_rxctrl_a[] = {
-    0xE3, 0x53, 0x09, 0x01,
-    0xE3, 0xA0, 0x10, 0x18
-};
-static const u8 pat_rxctrl_a_new[] = {
-    0xE3, 0x53, 0x09, 0x01,
-    0xE3, 0xA0, 0x1F, 0x46
-};
+static const u8 pat_rxctrl_b[] = { 0xE3,0xA0,0x1F,0x86, 0xEA,0xFF,0xFF,0x8C };
+static const u8 pat_rxctrl_b_new[] = { 0xE3,0xA0,0x1F,0x46, 0xEA,0xFF,0xFF,0x8C };
 
-/* Path B: 8192-byte buffer. MOV R1, #0x218; B <label> */
-static const u8 pat_rxctrl_b[] = {
-    0xE3, 0xA0, 0x1F, 0x86,
-    0xEA, 0xFF, 0xFF, 0x8C
-};
-static const u8 pat_rxctrl_b_new[] = {
-    0xE3, 0xA0, 0x1F, 0x46,
-    0xEA, 0xFF, 0xFF, 0x8C
-};
+static const u8 pat_rxctrl_c[] = { 0xE3,0xA0,0x1F,0xC6 };
+static const u8 pat_rxctrl_c_new[] = { 0xE3,0xA0,0x1F,0x46 };
 
-/* Path C: 16384-byte buffer (EHC path — the one that actually runs). MOV R1, #0x318 */
-static const u8 pat_rxctrl_c[] = {
-    0xE3, 0xA0, 0x1F, 0xC6
-};
-static const u8 pat_rxctrl_c_new[] = {
-    0xE3, 0xA0, 0x1F, 0x46
-};
+// Patches 7-8: Software reset register — set IPOSC=1 (bit 7).
+// Keeps the 25MHz crystal alive during PHY power-down so we don't hit
+// the 772B's 600ms cold-start penalty (772A was only 160ms).
+static const u8 pat_swrst_init[] = { 0xE5,0x9A,0x00,0x00, 0xE3,0xA0,0x10,0x44 };
+static const u8 pat_swrst_init_new[] = { 0xE5,0x9A,0x00,0x00, 0xE3,0xA0,0x10,0xC4 };
 
-/* sw_reset in axInit: LDR R0,[R10]; MOV R1, #0x44 -> #0xC4 (set IPOSC) */
-static const u8 pat_swrst_init[] = {
-    0xE5, 0x9A, 0x00, 0x00,
-    0xE3, 0xA0, 0x10, 0x44
-};
-static const u8 pat_swrst_init_new[] = {
-    0xE5, 0x9A, 0x00, 0x00,
-    0xE3, 0xA0, 0x10, 0xC4
-};
+static const u8 pat_swrst_down[] = { 0xE5,0x94,0x00,0x00, 0xE3,0xA0,0x10,0x4C };
+static const u8 pat_swrst_down_new[] = { 0xE5,0x94,0x00,0x00, 0xE3,0xA0,0x10,0xCC };
 
-/* sw_reset in axDown: LDR R0,[R4]; MOV R1, #0x4C -> #0xCC (set IPOSC) */
-static const u8 pat_swrst_down[] = {
-    0xE5, 0x94, 0x00, 0x00,
-    0xE3, 0xA0, 0x10, 0x4C
-};
-static const u8 pat_swrst_down_new[] = {
-    0xE5, 0x94, 0x00, 0x00,
-    0xE3, 0xA0, 0x10, 0xCC
-};
+// Patch 9: VID:PID device scanner.
+// Stock code builds 0x0B957720 via MOV R12,#0x0B900000 + ADD +0x57000 + ADD +0x720.
+// 0x0B95772B can't be split into 3 ARM rotated immediates, so we replace
+// the whole 12-byte sequence with LDR R12,[PC,#0] / B skip / .word 0x0B95772B.
+static const u8 pat_vidpid[] = { 0xE3,0xA0,0xC6,0xB9, 0xE2,0x8C,0xCA,0x57, 0xE2,0x8C,0xCE,0x72 };
+static const u8 pat_vidpid_new[] = { 0xE5,0x9F,0xC0,0x00, 0xEA,0x00,0x00,0x00, 0x0B,0x95,0x77,0x2B };
 
-/* ---------- IOS58 VID:PID table pattern ---------- */
+/* ── IOS58 patch pattern ─────────────────────────────────────────────── */
 
-static const u8 pat_vidpid[] = { 0x0B, 0x95, 0x77, 0x20, 0x00, 0xFF, 0xFF, 0xFF };
+// Patch 10: VID:PID recognition table entry. Change 0x7720 -> 0x772B.
+static const u8 pat_ios58_vidpid[] = { 0x0B,0x95,0x77,0x20, 0x00,0xFF,0xFF,0xFF };
 
-/* ---------- helpers ---------- */
+/* ── Pattern search helpers ──────────────────────────────────────────── */
 
 static s32 find_pattern(const u8* buf, u32 size, const u8* pat, u32 len)
 {
     if (size < len) return -1;
-    u32 i;
-    for (i = 0; i <= size - len; i++)
+    for (u32 i = 0; i <= size - len; i++)
         if (memcmp(buf + i, pat, len) == 0)
             return (s32)i;
     return -1;
@@ -143,9 +102,7 @@ static s32 find_content_with(IOS* ios, const u8* pat, u32 len)
 {
     tmd* t = (tmd*)SIGNATURE_PAYLOAD(ios->tmd);
     tmd_content* cr = TMD_CONTENTS(t);
-    int i;
-    for (i = 0; i < ios->content_count; i++)
-    {
+    for (int i = 0; i < ios->content_count; i++) {
         if (!ios->decrypted_buffer[i]) continue;
         if (find_pattern(ios->decrypted_buffer[i], (u32)cr[i].size, pat, len) >= 0)
             return i;
@@ -156,27 +113,24 @@ static s32 find_content_with(IOS* ios, const u8* pat, u32 len)
 static s32 find_eth_module(IOS* ios)
 {
     s32 idx = find_content_with(ios, pat_ehc, sizeof(pat_ehc));
-    if (idx >= 0) return idx;
-    return find_content_with(ios, pat_oh0, sizeof(pat_oh0));
+    return (idx >= 0) ? idx : find_content_with(ios, pat_oh0, sizeof(pat_oh0));
 }
 
+// Patch a single byte at (pattern_match + offset)
 static s32 patch_byte(u8* buf, u32 size, const u8* base, u32 baselen,
     u32 offset, u8 expect, u8 value, const char* name)
 {
     s32 off = find_pattern(buf, size, base, baselen);
-    if (off < 0 || (u32)(off + offset + 1) > size)
-    {
+    if (off < 0 || (u32)(off + offset + 1) > size) {
         printf("  %s: NOT FOUND\n", name);
         return -1;
     }
     u8 c = buf[off + offset];
-    if (c == value)
-    {
+    if (c == value) {
         printf("  %s: already 0x%02X\n", name, value);
         return 1;
     }
-    if (c != expect)
-    {
+    if (c != expect) {
         printf("  %s: unexpected 0x%02X\n", name, c);
         return -1;
     }
@@ -185,18 +139,17 @@ static s32 patch_byte(u8* buf, u32 size, const u8* base, u32 baselen,
     return 0;
 }
 
+// Replace a whole block in-place
 static s32 patch_block(u8* buf, u32 size, const u8* old, const u8* repl,
     u32 len, const char* name)
 {
     s32 off = find_pattern(buf, size, old, len);
-    if (off >= 0)
-    {
+    if (off >= 0) {
         printf("  %s @ 0x%04X\n", name, off);
         memcpy(buf + off, repl, len);
         return 0;
     }
-    if (find_pattern(buf, size, repl, len) >= 0)
-    {
+    if (find_pattern(buf, size, repl, len) >= 0) {
         printf("  %s: already done\n", name);
         return 1;
     }
@@ -204,7 +157,7 @@ static s32 patch_block(u8* buf, u32 size, const u8* old, const u8* repl,
     return -1;
 }
 
-/* ---------- IOS80 ethernet module patcher ---------- */
+/* ── IOS80: apply all 9 ethernet patches ─────────────────────────────── */
 
 static s32 patch_ios80_ethernet(IOS* ios)
 {
@@ -215,8 +168,7 @@ static s32 patch_ios80_ethernet(IOS* ios)
     s32 r;
 
     s32 index = find_eth_module(ios);
-    if (index < 0)
-    {
+    if (index < 0) {
         printf("Can't find ethernet module in IOS80\n");
         return -1;
     }
@@ -225,119 +177,117 @@ static s32 patch_ios80_ethernet(IOS* ios)
     u8* buf = ios->decrypted_buffer[index];
     u32 size = (u32)cr[index].size;
 
-    // 1: ehc path — '0' (0x30) to 'b' (0x62)
+    // 1: ehc path PID char '0' -> 'b'
     r = patch_byte(buf, size, pat_ehc, sizeof(pat_ehc), 21, 0x30, 0x62, "ehc path");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 2: oh0 path — '0' to 'b'
+    // 2: oh0 path PID char '0' -> 'b'
     r = patch_byte(buf, size, pat_oh0, sizeof(pat_oh0), 21, 0x30, 0x62, "oh0 path");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 3: PID immediate — ADD R3, R3, #0x20 to #0x2B
-    s32 off = find_pattern(buf, size, pat_mov_pid, sizeof(pat_mov_pid));
-    if (off < 0 || (u32)(off + 20) > size)
+    // 3: ADD R3,R3,#0x20 -> #0x2B (PID low byte in register)
     {
-        printf("  PID: MOV R3, #0x7700 not found\n");
-        return -1;
-    }
-    u8* add = buf + off + 16;
-    if (add[0] != 0xE2 || add[1] != 0x83 || add[2] != 0x30)
-    {
-        printf("  PID: unexpected instruction at +16\n");
-        return -1;
-    }
-    if (add[3] == 0x2B)
-    {
-        printf("  PID imm: already 0x2B\n");
-        existing++;
-    }
-    else if (add[3] == 0x20)
-    {
-        printf("  PID imm @ 0x%04X: 0x20 -> 0x2B\n", (s32)(add - buf) + 3);
-        add[3] = 0x2B;
-        applied++;
-    }
-    else
-    {
-        printf("  PID imm: unexpected 0x%02X\n", add[3]);
-        return -1;
+        s32 off = find_pattern(buf, size, pat_mov_pid, sizeof(pat_mov_pid));
+        if (off < 0 || (u32)(off + 20) > size) {
+            printf("  PID imm: pattern not found\n");
+            return -1;
+        }
+        u8* add = buf + off + 16;
+        if (add[0] != 0xE2 || add[1] != 0x83 || add[2] != 0x30) {
+            printf("  PID imm: unexpected ADD at +16\n");
+            return -1;
+        }
+        if (add[3] == 0x2B) {
+            printf("  PID imm: already 0x2B\n");
+            existing++;
+        }
+        else if (add[3] == 0x20) {
+            printf("  PID imm @ 0x%04X: 0x20 -> 0x2B\n", (s32)(add - buf) + 3);
+            add[3] = 0x2B;
+            applied++;
+        }
+        else {
+            printf("  PID imm: unexpected 0x%02X\n", add[3]);
+            return -1;
+        }
     }
 
-    // 4: RX control path A — 0x18 to 0x118
+    // 4: RX ctrl A — MOV R1,#0x018 -> #0x118
     r = patch_block(buf, size, pat_rxctrl_a, pat_rxctrl_a_new,
-        sizeof(pat_rxctrl_a), "RX ctrl A (0x18 -> 0x118)");
+        sizeof(pat_rxctrl_a), "RX ctrl A");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 5: RX control path B — 0x218 to 0x118
+    // 5: RX ctrl B — MOV R1,#0x218 -> #0x118
     r = patch_block(buf, size, pat_rxctrl_b, pat_rxctrl_b_new,
-        sizeof(pat_rxctrl_b), "RX ctrl B (0x218 -> 0x118)");
+        sizeof(pat_rxctrl_b), "RX ctrl B");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 6: RX control path C — 0x318 to 0x118 (the EHC path that actually runs)
+    // 6: RX ctrl C — MOV R1,#0x318 -> #0x118 (the EHC/USB2 path)
     r = patch_block(buf, size, pat_rxctrl_c, pat_rxctrl_c_new,
-        sizeof(pat_rxctrl_c), "RX ctrl C (0x318 -> 0x118)");
+        sizeof(pat_rxctrl_c), "RX ctrl C");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 7: sw_reset axInit — 0x44 to 0xC4 (IPOSC=1)
+    // 7: sw_reset in axInit — 0x44 -> 0xC4 (IPOSC=1)
     r = patch_block(buf, size, pat_swrst_init, pat_swrst_init_new,
-        sizeof(pat_swrst_init), "sw_reset init (0x44 -> 0xC4)");
+        sizeof(pat_swrst_init), "sw_reset init");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    // 8: sw_reset axDown — 0x4C to 0xCC (IPOSC=1)
+    // 8: sw_reset in axDown — 0x4C -> 0xCC (IPOSC=1)
     r = patch_block(buf, size, pat_swrst_down, pat_swrst_down_new,
-        sizeof(pat_swrst_down), "sw_reset down (0x4C -> 0xCC)");
+        sizeof(pat_swrst_down), "sw_reset down");
     if (r < 0) return -1;
     if (r == 0) applied++; else existing++;
 
-    if (applied == 0)
-    {
-        printf("IOS80: all 8 patches already applied\n");
+    // 9: VID:PID scanner — MOV+ADD+ADD -> LDR from inline literal pool
+    r = patch_block(buf, size, pat_vidpid, pat_vidpid_new,
+        sizeof(pat_vidpid), "VID:PID scanner");
+    if (r < 0) return -1;
+    if (r == 0) applied++; else existing++;
+
+    if (applied == 0) {
+        printf("IOS80: all 9 patches already applied\n");
         return 1;
     }
 
+    // Mark content as non-shared and update hash
     t->contents[index].type = 1;
     SHA1(buf, size, hash);
     memcpy(cr[index].hash, hash, 20);
-    printf("IOS80: %d new + %d existing = 8 on content #%d\n",
-        applied, existing, index);
+    printf("IOS80: %d new + %d existing = 9 on content #%d\n", applied, existing, index);
     return 0;
 }
 
-/* ---------- IOS58 VID:PID patcher ---------- */
+/* ── IOS58: patch VID:PID table ──────────────────────────────────────── */
 
-static s32 patch_ios58_vidpid(IOS* ios)
+static s32 patch_ios58_vidpid_table(IOS* ios)
 {
     tmd* t = (tmd*)SIGNATURE_PAYLOAD(ios->tmd);
     tmd_content* cr = TMD_CONTENTS(t);
     u8 hash[20];
 
-    s32 index = find_content_with(ios, pat_vidpid, sizeof(pat_vidpid));
-    if (index < 0)
-    {
+    s32 index = find_content_with(ios, pat_ios58_vidpid, sizeof(pat_ios58_vidpid));
+    if (index < 0) {
         u8 done[] = { 0x0B, 0x95, 0x77, 0x2B, 0x00, 0xFF, 0xFF, 0xFF };
-        index = find_content_with(ios, done, sizeof(done));
-        if (index >= 0)
-        {
-            printf("IOS58: VID:PID already 772B\n");
+        if (find_content_with(ios, done, sizeof(done)) >= 0) {
+            printf("IOS58: VID:PID already 0x772B\n");
             return 1;
         }
-        printf("Can't find VID:PID in IOS58\n");
+        printf("Can't find VID:PID table in IOS58\n");
         return -1;
     }
 
-    printf("VID:PID stub is content #%d\n", index);
+    printf("VID:PID table is content #%d\n", index);
     u8* buf = ios->decrypted_buffer[index];
     u32 size = (u32)cr[index].size;
 
-    s32 off = find_pattern(buf, size, pat_vidpid, sizeof(pat_vidpid));
-    if (off < 0)
-    {
+    s32 off = find_pattern(buf, size, pat_ios58_vidpid, sizeof(pat_ios58_vidpid));
+    if (off < 0) {
         printf("  VID:PID pattern lost\n");
         return -1;
     }
@@ -352,7 +302,7 @@ static s32 patch_ios58_vidpid(IOS* ios)
     return 0;
 }
 
-/* ---------- install helper ---------- */
+/* ── Generic: read, patch, fakesign, encrypt, install ────────────────── */
 
 static s32 do_patch_and_install(u32 iosnr, u32 rev, s32(*patcher)(IOS*))
 {
@@ -361,21 +311,18 @@ static s32 do_patch_and_install(u32 iosnr, u32 rev, s32(*patcher)(IOS*))
 
     printf("\nReading IOS%u v%u...\n", iosnr, rev);
     ret = get_IOS(&ios, iosnr, rev);
-    if (ret < 0)
-    {
+    if (ret < 0) {
         printf("Failed to read IOS%u (ret %d)\n", iosnr, ret);
         return ret;
     }
 
     ret = patcher(ios);
-    if (ret == 1)
-    {
+    if (ret == 1) {
         printf("Nothing to do.\n");
         free_IOS(&ios);
         return 0;
     }
-    if (ret < 0)
-    {
+    if (ret < 0) {
         free_IOS(&ios);
         return ret;
     }
@@ -390,18 +337,17 @@ static s32 do_patch_and_install(u32 iosnr, u32 rev, s32(*patcher)(IOS*))
     ret = install_IOS(ios, false);
     free_IOS(&ios);
 
-    if (ret < 0)
-    {
+    if (ret < 0) {
         printf("\nInstall failed (ret %d)\n", ret);
         if (ret == -1017 || ret == -2011)
-            printf("Hash check still active on running IOS.\n");
+            printf("Hash check still active — launch from HBC.\n");
         return ret;
     }
     printf("Done.\n");
     return 0;
 }
 
-/* ---------- video / UI ---------- */
+/* ── Video ───────────────────────────────────────────────────────────── */
 
 static void InitVideo(void)
 {
@@ -429,7 +375,7 @@ static void bail(const char* msg)
 
 extern void __exception_setreload(int t);
 
-/* ---------- main ---------- */
+/* ── Entry point ─────────────────────────────────────────────────────── */
 
 int main(int argc, char* argv[])
 {
@@ -442,9 +388,8 @@ int main(int argc, char* argv[])
 
     printf("\n\n");
     printf("=== AX88772B/C USB Ethernet Patcher for vWii ===\n\n");
-    printf("The AX88772C chip uses PID 0x772B.\n\n");
-    printf("  IOS80: PID + RX header mode + IPOSC  (8 patches)\n");
-    printf("  IOS58: VID:PID table                  (1 patch)\n\n");
+    printf("Adapter PID 0x772B -> stock driver expects 0x7720.\n");
+    printf("IOS80: 9 patches | IOS58: 1 patch\n\n");
     printf("Requires stock IOS80 v7200 and IOS58 v6432.\n");
     printf("Make sure you have Priiloader + Aroma as safety net.\n\n");
 
@@ -463,7 +408,7 @@ int main(int argc, char* argv[])
     WPAD_SetDataFormat(WPAD_CHAN_0, WPAD_FMT_BTNS_ACC_IR);
 
     if (!ret)
-        bail("AHBPROT not available. Launch from HBC.");
+        bail("AHBPROT not available. Launch from HBC with <ahb_access/>.");
 
     s32 v80 = checkIOS(IOS80_NR);
     s32 v58 = checkIOS(IOS58_NR);
@@ -476,20 +421,19 @@ int main(int argc, char* argv[])
     printf("\nPress A to patch, anything else to exit.\n");
     u32 pressed = 0, pressedGC = 0;
     waitforbuttonpress(&pressed, &pressedGC);
-    if (pressed != WPAD_BUTTON_A && pressedGC != PAD_BUTTON_A)
-    {
+    if (pressed != WPAD_BUTTON_A && pressedGC != PAD_BUTTON_A) {
         printf("Cancelled.\n");
         ISFS_Deinitialize();
         Reboot();
     }
 
-    printf("\n--- Step 1/2: IOS80 ---\n");
+    printf("\n--- Step 1/2: IOS80 (9 patches) ---\n");
     ret = do_patch_and_install(IOS80_NR, IOS80_REV, patch_ios80_ethernet);
     if (ret < 0)
         bail("IOS80 failed. Use Aroma to recover.");
 
-    printf("\n--- Step 2/2: IOS58 ---\n");
-    ret = do_patch_and_install(IOS58_NR, IOS58_REV, patch_ios58_vidpid);
+    printf("\n--- Step 2/2: IOS58 (1 patch) ---\n");
+    ret = do_patch_and_install(IOS58_NR, IOS58_REV, patch_ios58_vidpid_table);
     if (ret < 0)
         bail("IOS58 failed. IOS80 already patched. Re-run to retry.");
 
