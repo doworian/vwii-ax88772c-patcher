@@ -52,11 +52,6 @@ The AX88772C chip reports PID `0x772B` on the USB bus (same as the 772B), not `0
 
 Safe to re-run - detects already-applied patches.
 
-## Recovery
-
-- **HBC won't launch:** Hold B during vWii boot → Priiloader
-- **If something really goes wrong (Brick):** Aroma → vWii Decaffeinator
-
 ## Building
 
 Requires [devkitPPC](https://devkitpro.org/) with libogc and libfat.
